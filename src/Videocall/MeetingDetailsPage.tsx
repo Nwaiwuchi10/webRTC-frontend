@@ -8,8 +8,8 @@ import {
   FaVideoSlash,
 } from "react-icons/fa";
 
-// const socket = io("http://localhost:5000");
-const socket = io("https://appmosphere-backend-task.onrender.com");
+const socket = io("http://localhost:5000");
+// const socket = io("https://appmosphere-backend-task.onrender.com");
 interface Participant {
   userId: string;
   stream?: MediaStream;
