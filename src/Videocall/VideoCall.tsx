@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import io from "socket.io-client";
 
 const socket = io("http://localhost:5000"); // Adjust based on your backend URL
-
+// const socket = io("https://appmosphere-backend-task.onrender.com");
 interface OfferPayload {
   offer: RTCSessionDescriptionInit;
   from: string;
