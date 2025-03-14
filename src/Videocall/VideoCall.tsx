@@ -27,7 +27,7 @@ const VideoCall: React.FC = () => {
 
   const [userId] = useState(() => Math.random().toString(36).substr(2, 9));
   const [meetingId, setMeetingId] = useState<string>("");
-  const [roomId, setRoomId] = useState<string | null>(null);
+  // const [roomId, setRoomId] = useState<string | null>(null);
   const [remoteSocketId, setRemoteSocketId] = useState<string | null>(null);
   const [peerConnection, setPeerConnection] =
     useState<RTCPeerConnection | null>(null);
