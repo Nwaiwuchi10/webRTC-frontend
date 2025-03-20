@@ -1,157 +1,192 @@
-import React, { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import io from "socket.io-client";
+import React, { useEffect, useCallback, useState, useRef } from "react";
+import ReactPlayer from "react-player";
+import peer from "../service/peer";
+import { useNavigate, useParams } from "react-router-dom";
+import { useSocket } from "../context/SocketProvider";
 import {
   FaMicrophone,
   FaMicrophoneSlash,
   FaVideo,
   FaVideoSlash,
+  FaSignOutAlt,
 } from "react-icons/fa";
 
-const socket = io("http://localhost:5000");
-// const socket = io("https://appmosphere-backend-task.onrender.com");
-interface Participant {
-  userId: string;
-  stream?: MediaStream;
-}
-
-interface OfferPayload {
-  offer: RTCSessionDescriptionInit;
-  from: string;
-}
-
-const MeetingRoom: React.FC = () => {
-  const { meetingId } = useParams<{ meetingId: string }>();
+const MeetingRoom = () => {
   const navigate = useNavigate();
+  const { meetingId } = useParams();
+  const socket: any = useSocket();
+  const [remoteSocketId, setRemoteSocketId] = useState<any>(null);
+  const [myStream, setMyStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [participants, setParticipants] = useState<any[]>([]);
+  console.log("participants", participants);
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const [participants, setParticipants] = useState<Participant[]>([]);
-  const [peerConnections, setPeerConnections] = useState<{
-    [key: string]: RTCPeerConnection;
-  }>({});
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [isMicOn, setIsMicOn] = useState<boolean>(true);
-  const [isVideoOn, setIsVideoOn] = useState<boolean>(true);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isVideoOn, setIsVideoOn] = useState(true);
 
   useEffect(() => {
-    socket.emit("join-room", { meetingId, userId: socket.id });
-
-    socket.on("update-participants", (userIds: string[]) => {
-      const newParticipants = userIds.map((userId) => ({ userId }));
-      setParticipants(newParticipants);
-    });
-
-    socket.on("receive-offer", async ({ offer, from }: OfferPayload) => {
-      const pc = createPeerConnection(from);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit("answer", { answer, targetSocketId: from });
-    });
-
-    socket.on(
-      "receive-answer",
-      async ({
-        answer,
-        from,
-      }: {
-        answer: RTCSessionDescriptionInit;
-        from: string;
-      }) => {
-        const pc = peerConnections[from];
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    if (meetingId && socket) {
+      socket.emit(
+        "room:join",
+        { meetingId, userId: socket.id },
+        (response: any) => {
+          if (response.success) {
+            setParticipants(response.participants);
+          } else {
+            console.error("Failed to join meeting:", response.error);
+          }
         }
-      }
-    );
-
-    socket.on(
-      "receive-ice-candidate",
-      async ({
-        candidate,
-        from,
-      }: {
-        candidate: RTCIceCandidateInit;
-        from: string;
-      }) => {
-        const pc = peerConnections[from];
-        if (pc) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        }
-      }
-    );
-
-    return () => {
-      socket.disconnect();
-    };
-  }, [meetingId, peerConnections]);
-
-  const createPeerConnection = (userId: string) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("ice-candidate", {
-          candidate: event.candidate,
-          targetSocketId: userId,
-        });
-      }
-    };
-
-    pc.ontrack = (event) => {
-      setParticipants((prev) =>
-        prev.map((p) =>
-          p.userId === userId ? { ...p, stream: event.streams[0] } : p
-        )
       );
-    };
+    }
+  }, [meetingId, socket]);
 
-    setPeerConnections((prev) => ({ ...prev, [userId]: pc }));
-
-    return pc;
-  };
-
-  const handleStartStream = async () => {
-    const userStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true,
-    });
-
-    setStream(userStream);
-
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = userStream;
+  const handleUserJoined = useCallback(
+    ({
+      meetingId,
+      userId,
+      participants,
+    }: {
+      meetingId: string;
+      userId: string;
+      participants: any[];
+    }) => {
+      console.log(`User ${userId} joined room ${meetingId}`);
+      setParticipants(participants);
+      if (!remoteSocketId) {
+        setRemoteSocketId(userId);
+      }
+    },
+    []
+  );
+  const handleCallUser = useCallback(async () => {
+    if (!remoteSocketId) {
+      console.log("No remote socket ID");
+      return;
     }
 
-    participants.forEach(({ userId }) => {
-      const pc = createPeerConnection(userId);
-      userStream.getTracks().forEach((track) => pc.addTrack(track, userStream));
-
-      pc.createOffer().then((offer) => {
-        pc.setLocalDescription(offer);
-        socket.emit("offer", { offer, targetSocketId: userId });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
       });
-    });
-  };
+      console.log("My stream:", stream);
+      setMyStream(stream);
 
+      const offer = await peer.getOffer();
+      socket.emit("user:call", { to: remoteSocketId, offer });
+    } catch (error) {
+      console.error("Error getting media stream", error);
+    }
+  }, [remoteSocketId, socket]);
+
+  const handleIncomingCall = useCallback(
+    async ({ from, offer }: { from: any; offer: any }) => {
+      console.log("Incoming call from:", from);
+      setRemoteSocketId(from);
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: true,
+        });
+        setMyStream(stream);
+        const answer = await peer.getAnswer(offer);
+        socket.emit("call:accepted", { to: from, ans: answer });
+      } catch (error) {
+        console.error("Error handling incoming call", error);
+      }
+    },
+    [socket]
+  );
+  useEffect(() => {
+    peer.peer.ontrack = (event) => {
+      console.log("Remote stream received:", event.streams[0]);
+      setRemoteStream(event.streams[0]);
+    };
+  }, []);
+  const sendStreams = useCallback(() => {
+    if (!myStream) return;
+
+    const senders = peer.peer.getSenders(); // Get existing senders
+    myStream.getTracks().forEach((track) => {
+      const existingSender = senders.find((sender) => sender.track === track);
+      if (!existingSender) {
+        peer.peer.addTrack(track, myStream);
+      }
+    });
+  }, [myStream]);
+
+  const handleCallAccepted = useCallback(
+    async ({ from, ans }: { from: any; ans: any }) => {
+      if (peer.peer.signalingState !== "stable") {
+        await peer.setLocalDescription(ans);
+      }
+      sendStreams();
+      peer.peer.ontrack = (event) => {
+        console.log("Remote stream received:", event.streams[0]);
+        setRemoteStream(event.streams[0]);
+      };
+    },
+    [sendStreams]
+  );
+
+  useEffect(() => {
+    socket.on("user:joined", handleUserJoined);
+    socket.on("incomming:call", handleIncomingCall);
+    socket.on("call:accepted", handleCallAccepted);
+
+    return () => {
+      socket.off("user:joined", handleUserJoined);
+      socket.off("incomming:call", handleIncomingCall);
+      socket.off("call:accepted", handleCallAccepted);
+    };
+  }, [socket, handleUserJoined, handleIncomingCall, handleCallAccepted]);
+  useEffect(() => {
+    if (myStream) {
+      sendStreams();
+    }
+  }, [myStream]);
+
+  useEffect(() => {
+    if (remoteSocketId) {
+      handleCallUser();
+    }
+  }, [remoteSocketId]);
+
+  // Leave Meeting
   const toggleMic = () => {
-    if (stream) {
-      stream
-        .getAudioTracks()
-        .forEach((track) => (track.enabled = !track.enabled));
-      setIsMicOn(!isMicOn);
+    if (myStream) {
+      const audioTracks = myStream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        audioTracks.forEach((track) => {
+          track.enabled = !track.enabled;
+        });
+        setIsMicOn(audioTracks[0].enabled); // Update state based on the current state
+      }
     }
   };
 
   const toggleVideo = () => {
-    if (stream) {
-      stream
-        .getVideoTracks()
-        .forEach((track) => (track.enabled = !track.enabled));
-      setIsVideoOn(!isVideoOn);
+    if (myStream) {
+      const videoTracks = myStream.getVideoTracks();
+      if (videoTracks.length > 0) {
+        videoTracks.forEach((track) => {
+          track.enabled = !track.enabled;
+        });
+        setIsVideoOn(videoTracks[0].enabled); // Update state based on the current state
+      }
     }
   };
+  useEffect(() => {
+    if (myStream) {
+      if (myStream.getAudioTracks().length > 0) {
+        setIsMicOn(myStream.getAudioTracks()[0].enabled);
+      }
+      if (myStream.getVideoTracks().length > 0) {
+        setIsVideoOn(myStream.getVideoTracks()[0].enabled);
+      }
+    }
+  }, [myStream]);
 
   const leaveMeeting = () => {
     if (localVideoRef.current?.srcObject) {
@@ -159,46 +194,81 @@ const MeetingRoom: React.FC = () => {
       stream.getTracks().forEach((track) => track.stop());
     }
 
-    Object.values(peerConnections).forEach((pc) => pc.close());
+    Object.values(peer).forEach((pc) => pc.close());
 
     socket.emit("leave-room", { meetingId, userId: socket.id });
     socket.disconnect();
     navigate("/");
   };
 
-  useEffect(() => {
-    handleStartStream();
-  }, []);
+  const leaveMeetings = () => {
+    if (!socket) return; // Ensure socket is defined
+
+    // Make sure userId is defined (fetch it from state, context, or props)
+    const userId = socket.id; // If using socket ID as user identifier
+
+    if (myStream) {
+      myStream.getTracks().forEach((track) => {
+        track.enabled = false;
+        track.stop();
+      });
+
+      setMyStream(null);
+      setRemoteStream(null);
+      setParticipants([]);
+    }
+
+    // Emit a custom "leave-meeting" event with meetingId and userId
+    if (userId && meetingId) {
+      socket.emit("leave-meeting", { meetingId, userId });
+    }
+
+    // Navigate away after emitting the event
+    navigate("/");
+  };
 
   return (
     <div>
-      <h2>Meeting Room: {meetingId}</h2>
-      <video ref={localVideoRef} autoPlay playsInline />
-
-      <div className="participants">
-        {participants.map((participant) => (
-          <div key={participant.userId}>
-            <h4>User: {participant.userId}</h4>
-            <video
-              autoPlay
-              playsInline
-              ref={(ref) => {
-                if (ref && participant.stream) {
-                  ref.srcObject = participant.stream;
-                }
-              }}
-            />
-          </div>
-        ))}
+      <h1>Meeting Room</h1>
+      <h4>{remoteSocketId ? "Connected" : "No one in room"}</h4>
+      {/* {myStream && <button onClick={sendStreams}>Send Stream</button>}
+      {remoteSocketId && <button onClick={handleCallUser}>Call</button>} */}
+      {/* {participants?.map((participant) => (
+        <>
+          <h4>{participant.userId} </h4>
+        </>
+      ))} */}
+      <div style={{ display: "flex", paddingBottom: "20px" }}>
+        {myStream && (
+          <ReactPlayer
+            playing
+            height="100px"
+            width="200px"
+            // ref={myStream}
+            url={myStream}
+            // muted
+          />
+        )}
+        {remoteStream && (
+          <ReactPlayer
+            playing
+            height="100px"
+            width="200px"
+            url={remoteStream}
+            // muted
+          />
+        )}
       </div>
-
-      <div className="controls">
-        <button onClick={toggleMic}>
+      <div
+        className="controls"
+        style={{ display: "flex", gap: "10px", marginTop: "10px" }}
+      >
+        {/* <button onClick={toggleMic}>
           {isMicOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
         </button>
         <button onClick={toggleVideo}>
           {isVideoOn ? <FaVideo /> : <FaVideoSlash />}
-        </button>
+        </button> */}
         <button onClick={leaveMeeting}>Leave Meeting</button>
       </div>
     </div>
